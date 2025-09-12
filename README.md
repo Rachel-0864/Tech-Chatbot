@@ -13,7 +13,7 @@ with a **Gradio-powered frontend**.
 ## How It Runs
 The chatbot is designed to run locally:
 1. Start Ollama server: `ollama serve --port 11434`
-2. Run the Python script from CMD: `python main.py`
+2. Run the Python script from CMD: `python chatbot1.py`
 3. Open the link displayed in the terminal (e.g., `http://127.0.0.1:7860`)
 
 ⚠️ **Source code is private and not included in this repository.**
