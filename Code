@@ -1,0 +1,405 @@
+import requests
+import gradio as gr
+import os
+import pytesseract
+from PIL import Image
+import io
+import base64
+import numpy as np
+import tempfile
+import PyPDF2
+import docx
+import pandas as pd
+from pptx import Presentation
+import mimetypes
+
+# Configure Tesseract path
+pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Admin\Downloads\tesseract.exe"
+
+# API Configurations
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "gemma3:1b"
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+# File Processing Functions (unchanged, included for context)
+def extract_text_from_pdf(file_path):
+    try:
+        with open(file_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+            return text.strip()
+    except Exception as e:
+        return "Error: PDF Error: " + str(e)
+
+def extract_text_from_docx(file_path):
+    try:
+        doc = docx.Document(file_path)
+        text = ""
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+        return text.strip()
+    except Exception as e:
+        return "Error: DOCX Error: " + str(e)
+
+def extract_text_from_txt(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return file.read().strip()
+    except Exception as e:
+        return "Error: TXT Error: " + str(e)
+
+def extract_text_from_excel(file_path):
+    try:
+        text = ""
+        excel_file = pd.ExcelFile(file_path)
+        for sheet_name in excel_file.sheet_names:
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
+            text += "--- Sheet: " + sheet_name + " ---\n"
+            text += df.to_string() + "\n\n"
+        return text.strip()
+    except Exception as e:
+        return "Error: Excel Error: " + str(e)
+
+def extract_text_from_ppt(file_path):
+    try:
+        text = ""
+        prs = Presentation(file_path)
+        for slide_number, slide in enumerate(prs.slides, 1):
+            text += "--- Slide " + str(slide_number) + " ---\n"
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text += shape.text + "\n"
+            text += "\n"
+        return text.strip()
+    except Exception as e:
+        return "Error: PowerPoint Error: " + str(e)
+
+def extract_text_from_image(file_path):
+    try:
+        pil_image = Image.open(file_path)
+        extracted_text = pytesseract.image_to_string(pil_image)
+        extracted_text = extracted_text.strip()
+        if not extracted_text:
+            return "Warning: No text could be extracted from the image."
+        return extracted_text
+    except Exception as e:
+        return "Error: OCR Error: " + str(e)
+
+def process_uploaded_file(file):
+    if not file:
+        return "No file uploaded."
+    file_path = file.name if hasattr(file, 'name') else file
+    mime_type, _ = mimetypes.guess_type(file_path)
+    try:
+        if mime_type:
+            if mime_type == 'application/pdf':
+                return extract_text_from_pdf(file_path)
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+                return extract_text_from_docx(file_path)
+            elif mime_type == 'text/plain':
+                return extract_text_from_txt(file_path)
+            elif mime_type in ['application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']:
+                return extract_text_from_excel(file_path)
+            elif mime_type in ['application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation']:
+                return extract_text_from_ppt(file_path)
+            elif mime_type.startswith('image/'):
+                return extract_text_from_image(file_path)
+        file_ext = os.path.splitext(file_path)[1].lower()
+        if file_ext == '.pdf':
+            return extract_text_from_pdf(file_path)
+        elif file_ext == '.docx':
+            return extract_text_from_docx(file_path)
+        elif file_ext == '.txt':
+            return extract_text_from_txt(file_path)
+        elif file_ext in ['.xlsx', '.xls']:
+            return extract_text_from_excel(file_path)
+        elif file_ext in ['.pptx', '.ppt']:
+            return extract_text_from_ppt(file_path)
+        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp']:
+            return extract_text_from_image(file_path)
+        else:
+            return "Warning: Unsupported file type: " + file_ext
+    except Exception as e:
+        return "Error: File processing error: " + str(e)
+
+# Chatbot Logic
+def ollama_reply(message):
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": message,
+                "stream": False
+            }
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("response", "Warning: No response from Ollama.")
+        else:
+            return "Warning: Error from Ollama API: " + response.text
+    except Exception as e:
+        return "Error: Error connecting to Ollama: " + str(e)
+
+def deepseek_reply(message):
+    try:
+        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}
+        response = requests.post(
+            DEEPSEEK_URL,
+            headers=headers,
+            json={
+                "model": DEEPSEEK_MODEL,
+                "messages": [{"role": "user", "content": message}]
+            }
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+        else:
+            return "Warning: Error from DeepSeek API: " + response.text
+    except Exception as e:
+        return "Error: Error connecting to DeepSeek: " + str(e)
+
+def summarize_message(message):
+    """Summarize a message to a short title using Ollama."""
+    if len(message.split()) <= 10:
+        return message[:50].strip()  # Use message directly if short
+    try:
+        prompt = f"Summarize the following message into a concise title (5-10 words):\n{message}"
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False
+            }
+        )
+        if response.status_code == 200:
+            data = response.json()
+            summary = data.get("response", message[:50]).strip()
+            return summary[:50]  # Ensure title is not too long
+        else:
+            return message[:50].strip()  # Fallback to truncation
+    except Exception:
+        return message[:50].strip()  # Fallback to truncation
+
+def chatbot_reply(message, history, backend, file=None):
+    file_content = ""
+    if file is not None:
+        file_content = process_uploaded_file(file)
+        if file_content.startswith("Error:") or file_content.startswith("Warning:"):
+            return file_content
+    if file_content and message.strip():
+        final_message = f"{message}\n\nFile content:\n{file_content}"
+    elif file_content:
+        final_message = f"File content:\n{file_content}\n\nPlease analyze this content."
+    else:
+        final_message = message
+    if backend == "Ollama":
+        return ollama_reply(final_message)
+    elif backend == "DeepSeek":
+        return deepseek_reply(final_message)
+    else:
+        return "Warning: Invalid backend selected."
+
+# UI Layout
+custom_css = """
+.gradio-container {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+    font-family: sans-serif !important;
+}
+.logo {
+    text-align: center;
+    font-size: 2em;
+    color: #ffffff;
+}
+.logo span {
+    color: #00c2ff;
+}
+.gr-textbox, .gr-chatbot {
+    background-color: #1e1e1e !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 20px !important;
+}
+.gr-button {
+    background-color: #1e1e1e !important;
+    color: #ffffff !important;
+    border: none !important;
+}
+.gr-button-primary {
+    background-color: #00c2ff !important;
+    color: #000000 !important;
+}
+.gr-chatbot .message {
+    background-color: transparent !important;
+}
+.gr-chatbot {
+    background-color: #000000 !important;
+}
+.sidebar-item {
+    padding: 10px;
+    cursor: pointer;
+    color: #ffffff;
+}
+.sidebar-bottom {
+    position: absolute;
+    bottom: 10px;
+    width: 100%;
+}
+.gr-radio .gr-button {
+    background-color: transparent !important;
+    border: none !important;
+}
+.neat-textbox textarea {
+    min-height: 38px !important;
+    max-height: 60px !important;
+    height: 38px !important;
+    resize: vertical !important;
+    font-size: 1em;
+    width: 100% !important;
+    border-radius: 12px !important;
+    padding: 8px 12px !important;
+}
+"""
+
+with gr.Blocks(css=custom_css) as demo:
+    all_chats = gr.State({"Chat 1": []})
+    current_chat = gr.State("Chat 1")
+    selected_file = gr.State(None)
+
+    with gr.Row():
+        with gr.Column(scale=1, min_width=250):
+            new_chat_btn = gr.Button("+ New")
+            gr.Markdown("""
+            <div class="sidebar-item">🏠 Home</div>
+            <div class="sidebar-item">🔍 Discover</div>
+            <div class="sidebar-item">🛋 Spaces</div>
+            """)
+            gr.Markdown("### Library")
+            chat_selector = gr.Radio(
+                choices=["Chat 1"],
+                value="Chat 1",
+                label="",
+                show_label=False
+            )
+            backend_selector = gr.Radio(
+                ["Ollama", "DeepSeek"],
+                value="Ollama",
+                label="Choose AI Backend"
+            )
+            gr.Markdown("""
+            <div class="sidebar-bottom">
+            <div class="sidebar-item">🔔 Notifications</div>
+            <div class="sidebar-item">👤 Account</div>
+            <div class="sidebar-item">⬆️ Upgrade</div>
+            <div class="sidebar-item">⬇️ Install</div>
+            </div>
+            """)
+
+        with gr.Column(scale=4):
+            gr.Markdown('<h1 class="logo">TECH Chatbot</h1>')
+            chatbot = gr.Chatbot(height=500, type="messages")
+
+            with gr.Row():
+                file_upload = gr.UploadButton("Upload File", file_types=[
+                        ".txt", ".pdf", ".docx", 
+                        ".xlsx", ".xls", ".pptx", ".ppt",
+                        ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"
+                    ], file_count="single")
+                user_input = gr.Textbox(
+                    show_label=False,
+                    placeholder="Ask anything...",
+                    container=False,
+                    scale=10,
+                    lines=2,
+                    elem_classes=["neat-textbox"]
+                )
+                submit_btn = gr.Button("➤", variant="primary", size="sm")
+
+            with gr.Row():
+                clear_btn = gr.Button("Clear Chat")
+                clear_file_btn = gr.Button("Clear File")
+
+    def update_input(file, current_input):
+        if file:
+            file_name = os.path.basename(file.name)
+            return f"File: {file_name}\n{current_input or ''}"
+        return current_input or ""
+
+    def user_submit(message, history, backend, file, current_chat, all_chats, selected_file):
+        if not history:
+            title = summarize_message(message)  # Summarize the first message
+            old_title = current_chat
+            if old_title.startswith("Chat "):
+                del all_chats[old_title]
+                all_chats[title] = []
+                current_chat = title
+        response = chatbot_reply(message, history, backend, file or selected_file)
+        file_indicator = " + File" if file or selected_file else ""
+        new_history = history + [{
+            "role": "user",
+            "content": message + file_indicator
+        }, {
+            "role": "assistant",
+            "content": response
+        }]
+        all_chats[current_chat] = new_history
+        return new_history, all_chats, gr.update(choices=list(all_chats.keys()), value=current_chat), "", None, None, ""
+
+    def create_new_chat(all_chats):
+        new_id = f"Chat {len(all_chats) + 1}"
+        all_chats[new_id] = []
+        return all_chats, new_id, gr.update(choices=list(all_chats.keys()), value=new_id), [], new_id, None, ""
+
+    def switch_chat(selected_chat, all_chats):
+        return selected_chat, all_chats[selected_chat]
+
+    def clear_chat(current_chat, all_chats):
+        all_chats[current_chat] = []
+        return [], all_chats
+
+    def clear_file(user_input, selected_file):
+        return "", None
+
+    inputs_submit = [user_input, chatbot, backend_selector, file_upload, current_chat, all_chats, selected_file]
+    outputs_submit = [chatbot, all_chats, chat_selector, user_input, file_upload, selected_file, user_input]
+
+    submit_btn.click(user_submit, inputs_submit, outputs_submit)
+    user_input.submit(user_submit, inputs_submit, outputs_submit)
+    new_chat_btn.click(
+        create_new_chat,
+        all_chats,
+        [all_chats, current_chat, chat_selector, chatbot, current_chat, selected_file, user_input]
+    )
+    chat_selector.change(
+        switch_chat,
+        [chat_selector, all_chats],
+        [current_chat, chatbot]
+    )
+    clear_btn.click(
+        clear_chat,
+        [current_chat, all_chats],
+        [chatbot, all_chats]
+    )
+    clear_file_btn.click(clear_file, [user_input, selected_file], [user_input, selected_file])
+    file_upload.upload(update_input, [file_upload, user_input], user_input)
+
+# Installation Requirements
+"""
+Install required packages:
+pip install pytesseract pillow PyPDF2 python-docx pandas python-pptx requests gradio
+"""
+
+if __name__ == "__main__":
+    demo.launch(
+        server_name="127.0.0.1",
+        server_port=7860,
+        debug=True,
+        auth=[("admin", "mypassword")]
+    )
